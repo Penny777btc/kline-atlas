@@ -133,7 +133,8 @@ footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);font-si
   <div>
     <div class="eyebrow">BTC / ETH · 常规技术指标 · 实盘复盘</div>
     <h1 style="margin-top:4px">BTC 指标读图台</h1>
-    <p class="meta">数据：Binance 现货公开 K 线快照，截至 <span class="num" id="stamp"></span>（北京时间 UTC+8，日线以 08:00 开盘）。页面内所有指标由同一套公式现算，和交易所 App 的默认参数一致。</p>
+    <p class="meta">数据：Binance 现货公开 K 线，最新一根开始于 <span class="num" id="stamp"></span>（北京时间 UTC+8，日线以 08:00 开盘）。页面内所有指标由同一套公式现算，和交易所 App 的默认参数一致。</p>
+    <p class="meta" id="liveStatus">正在获取实时数据…</p>
   </div>
   <div class="meta">绿涨红跌为交易所默认；群里习惯红涨绿跌可在右侧切换。</div>
 </header>
@@ -210,11 +211,26 @@ function boll(c,n=20,k=2){const m=sma(c,n);const up=new Array(c.length).fill(nul
 function kdj(ks,n=9){const K=new Array(ks.length).fill(null),D=K.slice(),J=K.slice();let k=50,d=50;for(let i=n-1;i<ks.length;i++){let hh=-Infinity,ll=Infinity;for(let j=i-n+1;j<=i;j++){hh=Math.max(hh,ks[j][2]);ll=Math.min(ll,ks[j][3]);}const rsv=hh===ll?50:(ks[i][4]-ll)/(hh-ll)*100;k=2/3*k+1/3*rsv;d=2/3*d+1/3*k;K[i]=k;D[i]=d;J[i]=3*k-2*d;}return{K,D,J};}
 function atr(ks,n=14){const o=new Array(ks.length).fill(null);let a=null;const tr=ks.map((b,i)=>i===0?b[2]-b[3]:Math.max(b[2]-b[3],Math.abs(b[2]-ks[i-1][4]),Math.abs(b[3]-ks[i-1][4])));for(let i=n-1;i<ks.length;i++){a=i===n-1?tr.slice(0,n).reduce((p,q)=>p+q,0)/n:(a*(n-1)+tr[i])/n;o[i]=a;}return o;}
 const IND = {};
-for (const key in RAW){
+function computeInd(key){
   const ks=RAW[key]; const c=ks.map(b=>b[4]); const v=ks.map(b=>b[5]);
   const {dif,dea,hist}=macd(c); const b=boll(c); const {K,D,J}=kdj(ks);
   IND[key]={ema7:ema(c,7),ema25:ema(c,25),ema99:ema(c,99),ema200:ema(c,200),bu:b.up,bm:b.m,bl:b.lo,dif,dea,hist,rsi:rsi(c),K,D,J,atr:atr(ks),vma5:sma(v,5),vma10:sma(v,10)};
 }
+for (const key in RAW) computeInd(key);
+/* ---------- live data: Binance public klines, proxy first (works inside China), then direct ---------- */
+const LIVE={BTC_1d:['BTCUSDT','1d',500],BTC_4h:['BTCUSDT','4h',600],BTC_1h:['BTCUSDT','1h',500],ETH_4h:['ETHUSDT','4h',300],ETH_1h:['ETHUSDT','1h',400]};
+const SOURCES=[q=>'/api/klines?'+q,q=>'https://data-api.binance.vision/api/v3/klines?'+q,q=>'https://api.binance.com/api/v3/klines?'+q];
+let liveState={ok:0,at:0,fail:false,busy:false};
+async function fetchK(sym,iv,lim){const q=`symbol=${sym}&interval=${iv}&limit=${lim}`;for(const src of SOURCES){try{const ctl=new AbortController();const tm=setTimeout(()=>ctl.abort(),8000);const r=await fetch(src(q),{cache:'no-store',signal:ctl.signal});clearTimeout(tm);if(!r.ok)continue;const d=await r.json();if(Array.isArray(d)&&d.length>50&&Array.isArray(d[0]))return d.map(x=>[+x[0],+x[1],+x[2],+x[3],+x[4],Math.round(+x[5]*10)/10]);}catch(e){}}return null;}
+function setLiveStatus(){const el=document.getElementById('liveStatus');if(!el)return;const t=d=>{const p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;};
+  if(liveState.busy&&!liveState.at)el.textContent='正在获取实时数据…';
+  else if(liveState.at)el.innerHTML=`<span class="pill up">实时</span> 最近更新 ${t(new Date(liveState.at))}，每 60 秒自动刷新`;
+  else el.innerHTML=`<span class="pill down">快照</span> 实时数据获取失败，显示 2026-10-15 17:00 的快照`;}
+async function refreshLive(){if(liveState.busy)return;liveState.busy=true;setLiveStatus();
+  const results=await Promise.all(Object.entries(LIVE).map(async([k,[s,i,l]])=>[k,await fetchK(s,i,l)]));let ok=0;
+  for(const [k,d] of results){if(d){RAW[k]=d;computeInd(k);ok++;}}
+  liveState.busy=false;if(ok){liveState.ok=ok;liveState.at=Date.now();liveState.fail=false;document.getElementById('stamp').textContent=fmtT(RAW.BTC_1h[RAW.BTC_1h.length-1][0],true);render();}else liveState.fail=true;
+  setLiveStatus();}
 
 /* ---------- content ---------- */
 const CASES = [
@@ -253,7 +269,7 @@ const CASES = [
   meaning:'和 8 月 19 日的区别在"后续"：8 月突破后连续 6 天收在上轨外且量能放大；9 月突破后第二天就缩量回到轨内。单日冲高 + 缩量 = 短线顶部的概率大。',
   result:'09-21 的高点 87,396 至今仍是本轮高点；10 天内最低 −6.7%，10-08 最低 80,394（−7.2%）。',
   verdict:'ok',vtext:'验证：短线顶部成立',levels:['高点 87,396','低点 80,394']},
- {ds:'BTC_1d',from:'2026-09-20',to:'2026-10-15',sig:'2026-10-15',title:'现在：EMA7 下穿 EMA25，贴着布林下轨',when:'2026-10-15（进行中）',
+ {ds:'BTC_1d',from:'2026-09-20',to:'2026-10-15',sig:'2026-10-15',title:'复盘当天（10-15）：EMA7 下穿 EMA25，贴着布林下轨',when:'2026-10-15（写复盘时进行中，上方图表为实时数据）',
   signal:'10-15 EMA7 下穿 EMA25（死叉）；收盘价 81,326 在布林下轨 80,915 之上不到 1%；MACD DIF 283 正在接近零轴；RSI 45.6；KDJ K=28 还没金叉；10-03 EMA99 刚上穿 EMA200。',
   meaning:'中短期转弱、长期仍是多头排列（价格在 EMA99 / EMA200 之上 7%）。这是"回调"还是"反转"的分界：守住 80,394（10-08 低点）和布林下轨就是回调；放量跌破就看 EMA99 的 76,745。',
   result:'待验证。观察点：MACD DIF 是否下穿零轴（空头确认）；KDJ 是否在 K<30 时金叉并收复 EMA25 的 82,614（回调结束）。',
@@ -379,6 +395,7 @@ function render(){
   const cats=ks.map(b=>fmtT(b[0],!isDay));
   const n=ks.length;
   let start=Math.max(0,100-Math.round(12000/n)),end=100;
+  try{const prev=chart.getOption();if(!focus&&prev&&prev.dataZoom&&prev.dataZoom[0]&&prev.series&&prev.series[0]&&prev.series[0].data.length===n){start=prev.dataZoom[0].start;end=prev.dataZoom[0].end;}}catch(e){}
   const marks={points:[],areas:[]};
   if(focus){const a=idxOf(cur,CST(focus.from)),b=Math.min(n-1,idxOf(cur,CST(focus.to)));start=Math.max(0,a-2)/n*100;end=Math.min(100,(b+2)/n*100);
     const si=idxOf(cur,CST(focus.sig));marks.points.push({coord:[si,ks[si][2]],value:'信号',itemStyle:{color:C.accent}});
@@ -474,7 +491,7 @@ function renderStats(){
 
 /* ---------- boot ---------- */
 document.getElementById('stamp').textContent=fmtT(RAW.BTC_1h[RAW.BTC_1h.length-1][0],true);
-render();renderStats();
+render();renderStats();refreshLive();setInterval(refreshLive,60000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshLive();});
 window.addEventListener('resize',()=>chart.resize());
 const mq=matchMedia('(prefers-color-scheme: dark)');mq.addEventListener?mq.addEventListener('change',()=>{render();renderStats();}):mq.addListener(()=>{render();renderStats();});
 new MutationObserver(()=>{render();renderStats();}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
